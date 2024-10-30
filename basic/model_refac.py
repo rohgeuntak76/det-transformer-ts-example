@@ -20,7 +20,7 @@ def create_sequences(symbol,start,end, seq_length):
   scaler = MinMaxScaler(feature_range=(-1, 1)) # diff
   prices_normalized = scaler.fit_transform(prices)
   prices_tensor = torch.FloatTensor(prices_normalized)
-  print(prices_tensor[:10])
+  # print(prices_tensor[:10])
   # train_X, train_y = create_sequences(prices_tensor, seq_length)
   xs,ys = [],[]
   for i in range(len(prices_tensor)-seq_length-1):
@@ -28,7 +28,7 @@ def create_sequences(symbol,start,end, seq_length):
     y=prices_tensor[i+seq_length]
     xs.append(x)
     ys.append(y)
-  return torch.stack(xs), torch.stack(ys)
+  return torch.stack(xs), torch.stack(ys), scaler
 
 
 class TransformerModel(nn.Module): # inherts from nn.Modeul which is a base class of PyTorch with useful methods and attributes
@@ -126,6 +126,43 @@ def predict(model, input_data, device):
         prediction = model(input_data)  # Get the model's prediction
     return prediction
 
+def eval_with_train_dataset(model, train_scaler,X,y):
+  # X, y = train_X, train_y
+    model.eval() # Prepare the model for evaluation
+
+    all_predictions = []
+    all_actuals = []
+
+    with torch.no_grad():
+        for i in range(len(X)):
+            single_prediction = predict(model, X[i].unsqueeze(0),device)
+            single_prediction = single_prediction.cpu()
+            predicted_value = single_prediction.squeeze().numpy()[-1]  # Extract the last element
+            all_predictions.append(predicted_value)
+            all_actuals.append(y[i].item())
+
+    # Convert predictions and actuals to the original scale
+    all_predictions = train_scaler.inverse_transform(np.array(all_predictions).reshape(-1, 1))
+    all_actuals = train_scaler.inverse_transform(np.array(all_actuals).reshape(-1, 1))
+
+    # Calculate MSE and MAE
+    mse = mean_squared_error(all_actuals, all_predictions)
+    mae = mean_absolute_error(all_actuals, all_predictions)
+
+    print(f'Mean Squared Error: {mse}')
+    print(f'Mean Absolute Error: {mae}')
+
+    # plt.figure(figsize=(12, 6))
+    all_actuals_list = all_actuals.reshape(1,-1).squeeze().tolist()
+    all_predictions_list = all_predictions.reshape(1,-1).squeeze().tolist()
+
+    pltt.plot(all_actuals_list, label='Actual Prices', color='blue')
+    pltt.plot(all_predictions_list, label='Predicted Prices', color='red')
+    pltt.title('Actual vs Predicted Stock Prices (training data)')
+    pltt.xlabel('Time (Days)')
+    pltt.ylabel('Stock Price')
+    # pltt.legend()
+    pltt.show()
 
 def set_seed(seed_value):
     torch.manual_seed(seed_value)
@@ -144,10 +181,10 @@ def main(seq_length, batch_size, input_dim, num_layers,
     symbol = 'AAPL'
     start = '2010-01-01'
     end = '2023-12-31'
-    X, y = create_sequences(symbol,start,end, seq_length)
-    print(X[:3])
-    print(y[:3])
-    exit()
+    X, y, train_scaler = create_sequences(symbol,start,end, seq_length)
+    # print(X[:3])
+    # print(y[:3])
+    # exit()
     train_data = TensorDataset(X,y)
     train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=False)
 
@@ -159,96 +196,54 @@ def main(seq_length, batch_size, input_dim, num_layers,
     train(model, train_loader, optimizer, criterion, device, epochs=epochs)
 
     ################################### predict training data
-    X, y = train_X, train_y
-    model.eval() # Prepare the model for evaluation
-
-    all_predictions = []
-    all_actuals = []
-
-    with torch.no_grad():
-        for i in range(len(X)):
-            single_prediction = predict(model, X[i].unsqueeze(0),device)
-            single_prediction = single_prediction.cpu()
-            predicted_value = single_prediction.squeeze().numpy()[-1]  # Extract the last element
-            all_predictions.append(predicted_value)
-            all_actuals.append(y[i].item())
-
-    # Convert predictions and actuals to the original scale
-    all_predictions = scaler.inverse_transform(np.array(all_predictions).reshape(-1, 1))
-    all_actuals = scaler.inverse_transform(np.array(all_actuals).reshape(-1, 1))
-
-    # Calculate MSE and MAE
-    mse = mean_squared_error(all_actuals, all_predictions)
-    mae = mean_absolute_error(all_actuals, all_predictions)
-
-    print(f'Mean Squared Error: {mse}')
-    print(f'Mean Absolute Error: {mae}')
-
-    plt.figure(figsize=(12, 6))
-    plt.plot(all_actuals, label='Actual Prices', color='blue')
-    plt.plot(all_predictions, label='Predicted Prices', color='red')
-    plt.title('Actual vs Predicted Stock Prices (training data)')
-    plt.xlabel('Time (Days)')
-    plt.ylabel('Stock Price')
-    plt.legend()
-    plt.show()
-    # plt.figure(figsize=(12, 6))
-    all_actuals_list = all_actuals.reshape(1,-1).squeeze().tolist()
-    all_predictions_list = all_predictions.reshape(1,-1).squeeze().tolist()
-
-    pltt.plot(all_actuals_list, label='Actual Prices', color='blue')
-    pltt.plot(all_predictions_list, label='Predicted Prices', color='red')
-    pltt.title('Actual vs Predicted Stock Prices (training data)')
-    pltt.xlabel('Time (Days)')
-    pltt.ylabel('Stock Price')
-    # pltt.legend()
-    pltt.show()
+    eval_with_train_dataset(model,train_scaler,X,y)
+    
 
     ################################### predict new data
-    X, y = X_new, y_new
-    model.eval() # Prepare the model for evaluation
+    # X, y = X_new, y_new
+    # model.eval() # Prepare the model for evaluation
 
-    all_predictions = []
-    all_actuals = []
+    # all_predictions = []
+    # all_actuals = []
  
-    with torch.no_grad():
-        for i in range(len(X)):
-            single_prediction = predict(model, X[i].unsqueeze(0), device)
-            single_prediction = single_prediction.cpu()
-            predicted_value = single_prediction.squeeze().numpy()[-1]  # Extract the last element???rohg
-            all_predictions.append(predicted_value)
-            all_actuals.append(y[i].item())
+    # with torch.no_grad():
+    #     for i in range(len(X)):
+    #         single_prediction = predict(model, X[i].unsqueeze(0), device)
+    #         single_prediction = single_prediction.cpu()
+    #         predicted_value = single_prediction.squeeze().numpy()[-1]  # Extract the last element???rohg
+    #         all_predictions.append(predicted_value)
+    #         all_actuals.append(y[i].item())
 
-    # Convert predictions and actuals to the original scale
-    all_predictions = scaler.inverse_transform(np.array(all_predictions).reshape(-1, 1))
-    all_actuals = scaler.inverse_transform(np.array(all_actuals).reshape(-1, 1))
+    # # Convert predictions and actuals to the original scale
+    # all_predictions = scaler.inverse_transform(np.array(all_predictions).reshape(-1, 1))
+    # all_actuals = scaler.inverse_transform(np.array(all_actuals).reshape(-1, 1))
 
-    # Calculate MSE and MAE
-    mse = mean_squared_error(all_actuals, all_predictions)
-    mae = mean_absolute_error(all_actuals, all_predictions)
+    # # Calculate MSE and MAE
+    # mse = mean_squared_error(all_actuals, all_predictions)
+    # mae = mean_absolute_error(all_actuals, all_predictions)
 
-    print(f'Mean Squared Error: {mse}')
-    print(f'Mean Absolute Error: {mae}')
+    # print(f'Mean Squared Error: {mse}')
+    # print(f'Mean Absolute Error: {mae}')
 
-    plt.figure(figsize=(12, 6))
-    plt.plot(all_actuals, label='Actual Prices', color='blue')
-    plt.plot(all_predictions, label='Predicted Prices', color='red')
-    plt.title('Actual vs Predicted Stock Prices (actual data)')
-    plt.xlabel('Time (Days)')
-    plt.ylabel('Stock Price')
-    plt.legend()
-    plt.show()
-    # pltt.figure(figsize=(12, 6))
-    all_actuals_list = all_actuals.reshape(1,-1).squeeze().tolist()
-    all_predictions_list = all_predictions.reshape(1,-1).squeeze().tolist()
-    pltt.clear_figure()
-    pltt.plot(all_actuals_list, label='Actual Prices', color='blue')
-    pltt.plot(all_predictions_list, label='Predicted Prices', color='red')
-    pltt.title('Actual vs Predicted Stock Prices (actual data)')
-    pltt.xlabel('Time (Days)')
-    pltt.ylabel('Stock Price')
-    # pltt.legend()
-    pltt.show()
+    # plt.figure(figsize=(12, 6))
+    # plt.plot(all_actuals, label='Actual Prices', color='blue')
+    # plt.plot(all_predictions, label='Predicted Prices', color='red')
+    # plt.title('Actual vs Predicted Stock Prices (actual data)')
+    # plt.xlabel('Time (Days)')
+    # plt.ylabel('Stock Price')
+    # plt.legend()
+    # plt.show()
+    # # pltt.figure(figsize=(12, 6))
+    # all_actuals_list = all_actuals.reshape(1,-1).squeeze().tolist()
+    # all_predictions_list = all_predictions.reshape(1,-1).squeeze().tolist()
+    # pltt.clear_figure()
+    # pltt.plot(all_actuals_list, label='Actual Prices', color='blue')
+    # pltt.plot(all_predictions_list, label='Predicted Prices', color='red')
+    # pltt.title('Actual vs Predicted Stock Prices (actual data)')
+    # pltt.xlabel('Time (Days)')
+    # pltt.ylabel('Stock Price')
+    # # pltt.legend()
+    # pltt.show()
 
 # seq_length = 4
 
