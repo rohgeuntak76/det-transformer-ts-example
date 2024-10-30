@@ -1,0 +1,14 @@
+name: time-series-original
+# description: A bare-bones experiment configuration file to run the model_def.py script on a Determined cluster.
+entrypoint:  python3 model.py
+max_restarts: 0
+searcher:
+   name: single
+   metric: val_loss
+   max_length:
+     epochs: 1
+resources:
+  slots_per_trial: 0
+environment:
+  image:
+    cpu: determinedai/pytorch-ngc:0.34.0
