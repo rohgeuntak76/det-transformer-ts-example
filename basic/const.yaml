@@ -8,7 +8,7 @@ searcher:
    max_length:
      epochs: 1
 resources:
-  slots_per_trial: 0
+  slots_per_trial: 1
 environment:
   image:
     cpu: determinedai/pytorch-ngc:0.34.0
