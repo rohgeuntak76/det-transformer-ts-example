@@ -20,7 +20,9 @@ def create_sequences(symbol,start,end, seq_length):
   scaler = MinMaxScaler(feature_range=(-1, 1)) # diff
   prices_normalized = scaler.fit_transform(prices)
   prices_tensor = torch.FloatTensor(prices_normalized)
-  # print(prices_tensor[:10])
+  print(data[:10])
+  print(prices_tensor[:10])
+
   # train_X, train_y = create_sequences(prices_tensor, seq_length)
   xs,ys = [],[]
   for i in range(len(prices_tensor)-seq_length-1):
@@ -126,7 +128,7 @@ def predict(model, input_data, device):
         prediction = model(input_data)  # Get the model's prediction
     return prediction
 
-def eval_with_train_dataset(model, train_scaler,X,y):
+def eval_with_dataset(model, scaler,X,y):
   # X, y = train_X, train_y
     model.eval() # Prepare the model for evaluation
 
@@ -142,8 +144,8 @@ def eval_with_train_dataset(model, train_scaler,X,y):
             all_actuals.append(y[i].item())
 
     # Convert predictions and actuals to the original scale
-    all_predictions = train_scaler.inverse_transform(np.array(all_predictions).reshape(-1, 1))
-    all_actuals = train_scaler.inverse_transform(np.array(all_actuals).reshape(-1, 1))
+    all_predictions = scaler.inverse_transform(np.array(all_predictions).reshape(-1, 1))
+    all_actuals = scaler.inverse_transform(np.array(all_actuals).reshape(-1, 1))
 
     # Calculate MSE and MAE
     mse = mean_squared_error(all_actuals, all_predictions)
@@ -156,6 +158,7 @@ def eval_with_train_dataset(model, train_scaler,X,y):
     all_actuals_list = all_actuals.reshape(1,-1).squeeze().tolist()
     all_predictions_list = all_predictions.reshape(1,-1).squeeze().tolist()
 
+    pltt.clear_figure()
     pltt.plot(all_actuals_list, label='Actual Prices', color='blue')
     pltt.plot(all_predictions_list, label='Predicted Prices', color='red')
     pltt.title('Actual vs Predicted Stock Prices (training data)')
@@ -178,12 +181,20 @@ def main(seq_length, batch_size, input_dim, num_layers,
 
     ################################# train model
     set_seed(0)
+    # train data 
     symbol = 'AAPL'
-    start = '2010-01-01'
-    end = '2023-12-31'
-    X, y, train_scaler = create_sequences(symbol,start,end, seq_length)
-    # print(X[:3])
-    # print(y[:3])
+    start_train = '2010-01-01'
+    end_train = '2023-12-31'
+    X, y, scaler_train = create_sequences(symbol,start_train,end_train, seq_length)
+    print(X[:3])
+    print(y[:3])
+    
+    # test data
+    start_test = '2024-01-01'
+    end_test = '2024-06-30'
+    X_test, y_test, scaler_test = create_sequences(symbol,start_test,end_test, seq_length)
+    print(X_test[:3])
+    print(y_test[:3])
     # exit()
     train_data = TensorDataset(X,y)
     train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=False)
@@ -195,11 +206,12 @@ def main(seq_length, batch_size, input_dim, num_layers,
 
     train(model, train_loader, optimizer, criterion, device, epochs=epochs)
 
-    ################################### predict training data
-    eval_with_train_dataset(model,train_scaler,X,y)
+    ################################### predict 
+    eval_with_dataset(model,scaler_train,X,y) # eval with training data
     
+    eval_with_dataset(model,scaler_test,X_test,y_test) # eval with new data
 
-    ################################### predict new data
+    # ################################## predict new data
     # X, y = X_new, y_new
     # model.eval() # Prepare the model for evaluation
 
