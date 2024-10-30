@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import random
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import mean_squared_error, mean_absolute_error
+from sklearn.metrics import mean_squared_error, mean_absolute_error, mean_absolute_percentage_error
 import matplotlib.pyplot as plt
 
 import torch
@@ -20,8 +20,8 @@ def create_sequences(symbol,start,end, seq_length):
   scaler = MinMaxScaler(feature_range=(-1, 1)) # diff
   prices_normalized = scaler.fit_transform(prices)
   prices_tensor = torch.FloatTensor(prices_normalized)
-  print(data[:10])
-  print(prices_tensor[:10])
+  # print(data[:10])
+  # print(prices_tensor[:10])
 
   # train_X, train_y = create_sequences(prices_tensor, seq_length)
   xs,ys = [],[]
@@ -105,21 +105,22 @@ class TransformerModel(nn.Module): # inherts from nn.Modeul which is a base clas
       self.fc_out(output)
       return output[:,-1,:].squeeze(-1)
 
-def train(model, train_loader, optimizer, criterion, device, epochs):
+def train(model, train_loader, optimizer, criterion, device, epoch):
     model.train()
-    for epoch in range(epochs):
-        for x_batch, y_batch in train_loader:
-            x_batch = x_batch.to(device)
-            y_batch = y_batch.to(device)
-            optimizer.zero_grad()
-            y_pred = model(x_batch)
-            loss = criterion(y_pred, y_batch)
-            loss.backward()
-            optimizer.step()
-        if ( (epoch + 1) % 5) == 0:
-            print(f'Epoch {epoch+1}, Loss: {loss.item()}')
-        elif epoch == epochs - 1:
-            print(f'Epoch {epoch+1}, Loss: {loss.item()}')
+    # for epoch in range(epochs):
+    for x_batch, y_batch in train_loader:
+        x_batch = x_batch.to(device)
+        y_batch = y_batch.to(device)
+        optimizer.zero_grad()
+        y_pred = model(x_batch)
+        loss = criterion(y_pred, y_batch)
+        loss.backward()
+        optimizer.step()
+    
+    if ( (epoch + 1) % 5) == 0:
+        print(f'Epoch {epoch+1}, Loss: {loss.item()}')
+    elif epoch == epochs - 1:
+        print(f'Epoch {epoch+1}, Loss: {loss.item()}')
 
 def predict(model, input_data, device):
     input_data = input_data.to(device)
@@ -150,9 +151,11 @@ def eval_with_dataset(model, scaler,X,y):
     # Calculate MSE and MAE
     mse = mean_squared_error(all_actuals, all_predictions)
     mae = mean_absolute_error(all_actuals, all_predictions)
-
+    mape = mean_absolute_percentage_error(all_actuals, all_predictions)
+    #
     print(f'Mean Squared Error: {mse}')
     print(f'Mean Absolute Error: {mae}')
+    print(f'Mean Absolute Percentage Error: {mape}')
 
     # plt.figure(figsize=(12, 6))
     all_actuals_list = all_actuals.reshape(1,-1).squeeze().tolist()
@@ -204,87 +207,21 @@ def main(seq_length, batch_size, input_dim, num_layers,
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr) # learning rate (i.e. step size of loss function), 0.001 is a common lr
 
-    train(model, train_loader, optimizer, criterion, device, epochs=epochs)
+    for epoch in range(epochs):
+      train(model, train_loader, optimizer, criterion, device, epoch)
 
-    ################################### predict 
-    eval_with_dataset(model,scaler_train,X,y) # eval with training data
-    
+      ################################### predict 
+      if ( (epoch + 1) % 5) == 0:
+        eval_with_dataset(model,scaler_train,X,y) # eval with training data
+
+    ################################### predict final model 
     eval_with_dataset(model,scaler_test,X_test,y_test) # eval with new data
 
-    # ################################## predict new data
-    # X, y = X_new, y_new
-    # model.eval() # Prepare the model for evaluation
-
-    # all_predictions = []
-    # all_actuals = []
- 
-    # with torch.no_grad():
-    #     for i in range(len(X)):
-    #         single_prediction = predict(model, X[i].unsqueeze(0), device)
-    #         single_prediction = single_prediction.cpu()
-    #         predicted_value = single_prediction.squeeze().numpy()[-1]  # Extract the last element???rohg
-    #         all_predictions.append(predicted_value)
-    #         all_actuals.append(y[i].item())
-
-    # # Convert predictions and actuals to the original scale
-    # all_predictions = scaler.inverse_transform(np.array(all_predictions).reshape(-1, 1))
-    # all_actuals = scaler.inverse_transform(np.array(all_actuals).reshape(-1, 1))
-
-    # # Calculate MSE and MAE
-    # mse = mean_squared_error(all_actuals, all_predictions)
-    # mae = mean_absolute_error(all_actuals, all_predictions)
-
-    # print(f'Mean Squared Error: {mse}')
-    # print(f'Mean Absolute Error: {mae}')
-
-    # plt.figure(figsize=(12, 6))
-    # plt.plot(all_actuals, label='Actual Prices', color='blue')
-    # plt.plot(all_predictions, label='Predicted Prices', color='red')
-    # plt.title('Actual vs Predicted Stock Prices (actual data)')
-    # plt.xlabel('Time (Days)')
-    # plt.ylabel('Stock Price')
-    # plt.legend()
-    # plt.show()
-    # # pltt.figure(figsize=(12, 6))
-    # all_actuals_list = all_actuals.reshape(1,-1).squeeze().tolist()
-    # all_predictions_list = all_predictions.reshape(1,-1).squeeze().tolist()
-    # pltt.clear_figure()
-    # pltt.plot(all_actuals_list, label='Actual Prices', color='blue')
-    # pltt.plot(all_predictions_list, label='Predicted Prices', color='red')
-    # pltt.title('Actual vs Predicted Stock Prices (actual data)')
-    # pltt.xlabel('Time (Days)')
-    # pltt.ylabel('Stock Price')
-    # # pltt.legend()
-    # pltt.show()
-
-# seq_length = 4
-
-# training data
-# symbol = 'AAPL'
-# data = yf.download(symbol, start="2010-01-01", end="2023-06-01")
-# prices = data['Close'].values.reshape(-1, 1)
-# scaler = MinMaxScaler(feature_range=(-1, 1)) # diff
-# prices_normalized = scaler.fit_transform(prices)
-# prices_tensor = torch.FloatTensor(prices_normalized)
-# train_X, train_y = create_sequences(prices_tensor, seq_length)
-
-# new data
-# new_data = yf.download(symbol, start="2023-06-02", end="2023-12-31")
-# new_prices = new_data['Close'].values.reshape(-1, 1)
-# new_prices_normalized = scaler.transform(new_prices)
-# new_prices_tensor = torch.FloatTensor(new_prices_normalized)
-# X_new, y_new = create_sequences(new_prices_tensor, seq_length)
-
-# device = torch.device("cuda")
-# device = torch.device("cpu")
-# loop(epochs=50, device=device)
-
-# loop(seq_length = seq_length, num_layers = 4, dim_feedforward = 2048, epochs = 50, lr = 0.001 ,device=device)
 
 if __name__ == '__main__':
   # device = torch.device("cuda")
   # HP
-  seq_length = 4
+  seq_length = 8
   batch_size = 16
   input_dim = 1
   num_layers = 2
@@ -293,10 +230,10 @@ if __name__ == '__main__':
   output_dim = 1
   lr = 0.001
   epochs = 50
-  device = torch.device("cpu")
+  device = torch.device("cuda")
 
   main(seq_length,batch_size, input_dim, num_layers,num_heads,dim_feedforward,output_dim,lr,epochs,device)
 
   # def main(seq_length=4, batch_size=16, input_dim = 1, num_layers=2,
   #        num_heads = 2, dim_feedforward=10, output_dim = 1, lr=0.001,
-  #        epochs=50,device=torch.device('cpu')):
+  #        epochs=50,device=torch.device('cpu')):# (note: seq_length needs to be a multiple of num_heads)
