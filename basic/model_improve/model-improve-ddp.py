@@ -15,6 +15,9 @@ import torch.optim as optim # informer
 import plotext as pltt
 
 import determined as det
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
 
 def create_sequences(symbol,start,end, seq_length):
   # symbol = 'AAPL'
@@ -36,7 +39,6 @@ def create_sequences(symbol,start,end, seq_length):
   return torch.stack(xs), torch.stack(ys), scaler
 
 class PositionalEncoding(nn.Module):
-
     def __init__(self, d_model, max_len=5000):
         super(PositionalEncoding, self).__init__()       
         pe = torch.zeros(max_len, d_model)
@@ -45,7 +47,8 @@ class PositionalEncoding(nn.Module):
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
         pe = pe.unsqueeze(0).transpose(0, 1)
-        self.register_buffer('pe', pe)
+        # self.register_buffer('pe', pe)
+        self.register_parameter('pe', nn.Parameter(pe, requires_grad=False))
 
     def forward(self, x):
         return x + self.pe[:x.size(0), :]
@@ -106,38 +109,12 @@ class TransformerModel(nn.Module): # inherts from nn.Modeul which is a base clas
         self.pos_encoder = PositionalEncoding(seq_length)
 
     def forward(self, src):
-      '''
-      a special method in PyTorch to process input (src) and returns output
-
-      forward function is only called implicitly.  This is due to how nn.Module class is designed
-
-      (usage 1: training)
-      - y_pred = model(x_batch) internally becomes y_pred = model.forward(x_batch)
-      (usage 2: predicting)
-      - when we write "predictions = model(input_data)", it internally becomes "predictions = model.forward(input_data)
-      '''
-      # print(f"input : {src.size()}")
       src = self.embedding(src)
-      # print(f"output of first linear : {src.size()}")
-      # print(f"output of first linear : {src}")
-      # exit()
       src = self.pos_encoder(src)
-      # print(f"output of pos encoder : {src}")
-      # exit()
       src = src.permute(1, 0, 2)  # Reshape for transformer. Reshape input tensor to fit requirements of transformer encoder, which is this format (sequence length, batch size, features)
-      # print(f"ts input : {src.size()}")
       output = self.transformer(src)
-      # print(f"ts output : {output.size()}")
       output = output.permute(1, 0, 2)  # Reshape back
-      # print(f"output before linear : {output.size()}")
-      # self.fc_out(output)
       output = self.fc_out(output) # [batch, seq, seq] -> [batch, seq, 1]
-      
-      # print(f"return value : {output[:,-1,:].squeeze(-1)}")
-      # print(f"output after linear : {output.size()}")
-      # print(f"after fc_out : {self.fc_out(output).size()}")
-      # exit()
-      # return output[:,-1,:].squeeze(-1)
       return output[:,-1,:] # [batch, seq, 1] -> [batch, 1] // use last value
 
 def train(model, train_loader, optimizer, criterion, device, epoch,core_context):
@@ -154,13 +131,13 @@ def train(model, train_loader, optimizer, criterion, device, epoch,core_context)
         loss = criterion(y_pred, y_batch)
         loss.backward()
         optimizer.step()
-    
-    if ( (epoch + 1) % 5) == 0:
-        print(f'Epoch {epoch+1}, Loss: {loss.item()}')
-        core_context.train.report_training_metrics(
-           steps_completed=(epoch+1),
-           metrics={"train_loss": loss.item()}
-        )        
+    if core_context.distributed.rank == 0:        
+      if ( (epoch + 1) % 5) == 0:
+          print(f'Epoch {epoch+1}, Loss: {loss.item()}')
+          core_context.train.report_training_metrics(
+            steps_completed=(epoch+1),
+            metrics={"train_loss": loss.item()}
+          )        
     
 
 def predict(model, input_data, device):
@@ -172,7 +149,7 @@ def predict(model, input_data, device):
     # exit()
     return prediction
 
-def eval_with_dataset(model, scaler,X,y,core_context,epoch):
+def eval_with_dataset(model, scaler,X,y,core_context,epoch,device):
   # X, y = train_X, train_y
     model.eval() # Prepare the model for evaluation
 
@@ -232,7 +209,7 @@ def set_seed(seed_value):
 
 def main(seq_length, batch_size, input_dim, num_layers,
          num_heads, dim_feedforward, output_dim, lr,
-         epochs,device,core_context): # (note: seq_length needs to be a multiple of num_heads)
+         epochs,core_context): # (note: seq_length needs to be a multiple of num_heads)
 
     ################################# train model
     set_seed(0)
@@ -254,9 +231,21 @@ def main(seq_length, batch_size, input_dim, num_layers,
     print(y_test[:3])
     # exit()
     train_data = TensorDataset(X,y)
-    train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=False)
+
+    ### DDP code snippet start
+    device = torch.device(core_context.distributed.local_rank)
+
+    train_sampler = DistributedSampler(
+       train_data,
+       num_replicas=core_context.distributed.size,
+       rank=core_context.distributed.rank
+    )
+    # train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(train_data,sampler=train_sampler,batch_size=batch_size, shuffle=False)
 
     model = TransformerModel(input_dim, seq_length, num_layers, num_heads, dim_feedforward, output_dim).to(device)
+    model = DDP(model,device_ids=[device])
+    ### DDP code snippet end
 
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr) # learning rate (i.e. step size of loss function), 0.001 is a common lr
@@ -265,18 +254,19 @@ def main(seq_length, batch_size, input_dim, num_layers,
       train(model, train_loader, optimizer, criterion, device, epoch,core_context)
 
       ################################### predict 
-      if ( (epoch + 1) % 5) == 0:
-        eval_with_dataset(model,scaler_train,X,y,core_context,epoch) # eval with training data
+      if core_context.distributed.rank == 0:
+        if ( (epoch + 1) % 5) == 0:
+          eval_with_dataset(model,scaler_train,X,y,core_context,epoch,device) # eval with training data
 
     ################################### predict final model 
-    eval_with_dataset(model,scaler_test,X_test,y_test,core_context,epoch+1) # eval with new data
+    if core_context.distributed.rank == 0:
+      eval_with_dataset(model,scaler_test,X_test,y_test,core_context,epoch+1,device) # eval with new data
 
 
 if __name__ == '__main__':
-  # device = torch.device("cuda")
   # HP
   seq_length = 8
-  batch_size = 16 #128
+  batch_size = 32 # 16 #128
   input_dim = 1
   num_layers = 2
   num_heads = 2
@@ -284,9 +274,15 @@ if __name__ == '__main__':
   output_dim = 1
   lr = 0.0001
   epochs = 50
-  device = torch.device("cuda")
-  with det.core.init() as core_context:
-    main(seq_length,batch_size, input_dim, num_layers,num_heads,dim_feedforward,output_dim,lr,epochs,device,core_context)
+  # device = torch.device("cuda")
+  # with det.core.init() as core_context:
+  # main(seq_length,batch_size, input_dim, num_layers,num_heads,dim_feedforward,output_dim,lr,epochs,device,core_context)
+
+  #### DDP code snippet
+  dist.init_process_group("nccl")
+  distributed = det.core.DistributedContext.from_torch_distributed()
+  with det.core.init(distributed=distributed) as core_context:
+    main(seq_length,batch_size, input_dim, num_layers,num_heads,dim_feedforward,output_dim,lr,epochs,core_context)
 
   # def main(seq_length=4, batch_size=16, input_dim = 1, num_layers=2,
   #        num_heads = 2, dim_feedforward=10, output_dim = 1, lr=0.001,
