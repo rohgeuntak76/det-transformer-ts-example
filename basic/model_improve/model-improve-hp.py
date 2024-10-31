@@ -117,7 +117,7 @@ class TransformerModel(nn.Module): # inherts from nn.Modeul which is a base clas
       output = self.fc_out(output) # [batch, seq, seq] -> [batch, seq, 1]
       return output[:,-1,:] # [batch, seq, 1] -> [batch, 1] // use last value
 
-def train(model, train_loader, optimizer, criterion, device, epoch,core_context):
+def train(model, train_loader, optimizer, criterion, device, epoch,core_context,op):
     model.train()
     # for epoch in range(epochs):
     for x_batch, y_batch in train_loader:
@@ -137,7 +137,8 @@ def train(model, train_loader, optimizer, criterion, device, epoch,core_context)
           core_context.train.report_training_metrics(
             steps_completed=(epoch+1),
             metrics={"train_loss": loss.item()}
-          )        
+          )
+      op.report_progress(epoch)
     
 
 def predict(model, input_data, device):
@@ -198,6 +199,7 @@ def eval_with_dataset(model, scaler,X,y,core_context,epoch,device):
     pltt.ylabel('Stock Price')
     # pltt.legend()
     pltt.show()
+    return mse, mae, mape
 
 def set_seed(seed_value):
     torch.manual_seed(seed_value)
@@ -209,7 +211,7 @@ def set_seed(seed_value):
 
 def main(seq_length, batch_size, input_dim, num_layers,
          num_heads, dim_feedforward, output_dim, lr,
-         epochs,core_context): # (note: seq_length needs to be a multiple of num_heads)
+         core_context): # (note: seq_length needs to be a multiple of num_heads)
 
     ################################# train model
     set_seed(0)
@@ -250,30 +252,41 @@ def main(seq_length, batch_size, input_dim, num_layers,
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr) # learning rate (i.e. step size of loss function), 0.001 is a common lr
 
-    for epoch in range(epochs):
-      train(model, train_loader, optimizer, criterion, device, epoch,core_context)
+    for op in core_context.searcher.operations():
+    # for epoch in range(epochs):
+      for epoch in range(op.length):
+        train(model, train_loader, optimizer, criterion, device, epoch,core_context,op)
 
-      ################################### predict 
+        ################################### predict 
+        if core_context.distributed.rank == 0:
+          if ( (epoch + 1) % 5) == 0:
+            eval_with_dataset(model,scaler_train,X,y,core_context,epoch,device) # eval with training data
+    
+      ################################### predict final model with new timeline
       if core_context.distributed.rank == 0:
-        if ( (epoch + 1) % 5) == 0:
-          eval_with_dataset(model,scaler_train,X,y,core_context,epoch,device) # eval with training data
-
-    ################################### predict final model 
-    if core_context.distributed.rank == 0:
-      eval_with_dataset(model,scaler_test,X_test,y_test,core_context,epoch+1,device) # eval with new data
-
+        mse, mae, mape = eval_with_dataset(model,scaler_test,X_test,y_test,core_context,epoch+1,device) # eval with new data
+        op.report_completed({'mse': mse, 'mae':mae , 'mape':mape})
 
 if __name__ == '__main__':
   # HP
-  seq_length = 8
-  batch_size = 32 # 16 #128
+  info = det.get_cluster_info()
+
+  assert info is not None, "this example only runs on MLDE"
+  hparams = info.trial.hparams
+  
+  seq_length = hparams["seq_length"]  #8
+  batch_size = hparams["batch_size"] # 16 #128
   input_dim = 1
-  num_layers = 2
-  num_heads = 2
-  dim_feedforward = 10
+  num_layers = hparams["num_layers"] #2
+  num_heads = hparams["num_heads"] #2
+  dim_feedforward = hparams["dim_feedforward"] #10
   output_dim = 1
-  lr = 0.0001
-  epochs = 50
+  lr = hparams["lr"] #0.0001
+  # epochs = 50
+  
+  print(hparams)
+  print(f"seq_length: {seq_length} , num_layers: {num_layers} , num_heads: {num_heads} , dim_feedforward: {dim_feedforward}, lr: {lr}")
+
   # device = torch.device("cuda")
   # with det.core.init() as core_context:
   # main(seq_length,batch_size, input_dim, num_layers,num_heads,dim_feedforward,output_dim,lr,epochs,device,core_context)
@@ -282,7 +295,7 @@ if __name__ == '__main__':
   dist.init_process_group("nccl")
   distributed = det.core.DistributedContext.from_torch_distributed()
   with det.core.init(distributed=distributed) as core_context:
-    main(seq_length,batch_size, input_dim, num_layers,num_heads,dim_feedforward,output_dim,lr,epochs,core_context)
+    main(seq_length,batch_size, input_dim, num_layers,num_heads,dim_feedforward,output_dim,lr,core_context)
 
   # def main(seq_length=4, batch_size=16, input_dim = 1, num_layers=2,
   #        num_heads = 2, dim_feedforward=10, output_dim = 1, lr=0.001,
