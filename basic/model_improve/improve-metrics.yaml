@@ -1,6 +1,6 @@
-name: time-series-improve-pos-encoder
+name: time-series-improve-metrics
 # description: A bare-bones experiment configuration file to run the model_def.py script on a Determined cluster.
-entrypoint:  python3 model_improve.py
+entrypoint:  python3 model-improve-metrics.py
 max_restarts: 0
 searcher:
    name: single

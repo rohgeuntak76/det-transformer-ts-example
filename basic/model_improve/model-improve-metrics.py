@@ -14,6 +14,8 @@ from torch.utils.data import DataLoader, TensorDataset
 import torch.optim as optim # informer
 import plotext as pltt
 
+import determined as det
+
 def create_sequences(symbol,start,end, seq_length):
   # symbol = 'AAPL'
   data = yf.download(symbol, start=start, end=end)
@@ -138,7 +140,7 @@ class TransformerModel(nn.Module): # inherts from nn.Modeul which is a base clas
       # return output[:,-1,:].squeeze(-1)
       return output[:,-1,:] # [batch, seq, 1] -> [batch, 1] // use last value
 
-def train(model, train_loader, optimizer, criterion, device, epoch):
+def train(model, train_loader, optimizer, criterion, device, epoch,core_context):
     model.train()
     # for epoch in range(epochs):
     for x_batch, y_batch in train_loader:
@@ -155,8 +157,11 @@ def train(model, train_loader, optimizer, criterion, device, epoch):
     
     if ( (epoch + 1) % 5) == 0:
         print(f'Epoch {epoch+1}, Loss: {loss.item()}')
-    elif epoch == epochs - 1:
-        print(f'Epoch {epoch+1}, Loss: {loss.item()}')
+        core_context.train.report_training_metrics(
+           steps_completed=(epoch+1),
+           metrics={"train_loss": loss.item()}
+        )        
+    
 
 def predict(model, input_data, device):
     input_data = input_data.to(device)
@@ -167,7 +172,7 @@ def predict(model, input_data, device):
     # exit()
     return prediction
 
-def eval_with_dataset(model, scaler,X,y):
+def eval_with_dataset(model, scaler,X,y,core_context,epoch):
   # X, y = train_X, train_y
     model.eval() # Prepare the model for evaluation
 
@@ -197,7 +202,13 @@ def eval_with_dataset(model, scaler,X,y):
     print(f'Mean Squared Error: {mse}')
     print(f'Mean Absolute Error: {mae}')
     print(f'Mean Absolute Percentage Error: {mape}')
-
+    core_context.train.report_validation_metrics(
+       steps_completed=epoch,
+       metrics={'Mean Squared Error': mse,
+                'Mean Absolute Error': mae,
+                'Mean Absolute Percentage Error': mape,
+                }
+    )
     # plt.figure(figsize=(12, 6))
     all_actuals_list = all_actuals.reshape(1,-1).squeeze().tolist()
     all_predictions_list = all_predictions.reshape(1,-1).squeeze().tolist()
@@ -221,7 +232,7 @@ def set_seed(seed_value):
 
 def main(seq_length, batch_size, input_dim, num_layers,
          num_heads, dim_feedforward, output_dim, lr,
-         epochs,device): # (note: seq_length needs to be a multiple of num_heads)
+         epochs,device,core_context): # (note: seq_length needs to be a multiple of num_heads)
 
     ################################# train model
     set_seed(0)
@@ -232,6 +243,8 @@ def main(seq_length, batch_size, input_dim, num_layers,
     X, y, scaler_train = create_sequences(symbol,start_train,end_train, seq_length)
     print(X[:3])
     print(y[:3])
+    # print(len(y)) <- 3513
+    # exit()
     
     # test data
     start_test = '2024-01-01'
@@ -249,21 +262,21 @@ def main(seq_length, batch_size, input_dim, num_layers,
     optimizer = torch.optim.Adam(model.parameters(), lr=lr) # learning rate (i.e. step size of loss function), 0.001 is a common lr
 
     for epoch in range(epochs):
-      train(model, train_loader, optimizer, criterion, device, epoch)
+      train(model, train_loader, optimizer, criterion, device, epoch,core_context)
 
       ################################### predict 
       if ( (epoch + 1) % 5) == 0:
-        eval_with_dataset(model,scaler_train,X,y) # eval with training data
+        eval_with_dataset(model,scaler_train,X,y,core_context,epoch) # eval with training data
 
     ################################### predict final model 
-    eval_with_dataset(model,scaler_test,X_test,y_test) # eval with new data
+    eval_with_dataset(model,scaler_test,X_test,y_test,core_context,epoch+1) # eval with new data
 
 
 if __name__ == '__main__':
   # device = torch.device("cuda")
   # HP
   seq_length = 8
-  batch_size = 16
+  batch_size = 16 #128
   input_dim = 1
   num_layers = 2
   num_heads = 2
@@ -272,8 +285,8 @@ if __name__ == '__main__':
   lr = 0.0001
   epochs = 50
   device = torch.device("cuda")
-
-  main(seq_length,batch_size, input_dim, num_layers,num_heads,dim_feedforward,output_dim,lr,epochs,device)
+  with det.core.init() as core_context:
+    main(seq_length,batch_size, input_dim, num_layers,num_heads,dim_feedforward,output_dim,lr,epochs,device,core_context)
 
   # def main(seq_length=4, batch_size=16, input_dim = 1, num_layers=2,
   #        num_heads = 2, dim_feedforward=10, output_dim = 1, lr=0.001,
