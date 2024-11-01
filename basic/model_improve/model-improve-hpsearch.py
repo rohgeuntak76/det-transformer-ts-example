@@ -134,7 +134,7 @@ def train(model, train_loader, optimizer, criterion, device, epoch,core_context,
         optimizer.step()
     if core_context.distributed.rank == 0:        
       if ( (epoch + 1) % 5) == 0:
-          print(f'Epoch {epoch}, Loss: {loss.item()}')
+          print(f'Epoch {epoch}, Train Loss: {loss.item()}')
           core_context.train.report_training_metrics(
             steps_completed=(epoch),
             metrics={"train_loss": loss.item()}
@@ -152,8 +152,7 @@ def predict(model, input_data, device):
     # exit()
     return prediction
 
-def eval_with_dataset(model, scaler,X,y,core_context,epoch,device):
-  # X, y = train_X, train_y
+def eval_with_dataset(model, scaler,X,y,core_context,epoch,device,is_finished):
     model.eval() # Prepare the model for evaluation
 
     all_predictions = []
@@ -175,32 +174,44 @@ def eval_with_dataset(model, scaler,X,y,core_context,epoch,device):
     all_actuals = scaler.inverse_transform(np.array(all_actuals).reshape(-1, 1))
 
     # Calculate MSE and MAE
-    mse = mean_squared_error(all_actuals, all_predictions)
-    mae = mean_absolute_error(all_actuals, all_predictions)
-    mape = mean_absolute_percentage_error(all_actuals, all_predictions)
+    mse = mean_squared_error(all_actuals, all_predictions).item()
+    mae = mean_absolute_error(all_actuals, all_predictions).item()
+    mape = mean_absolute_percentage_error(all_actuals, all_predictions).item()
     #
-    print(f'Mean Squared Error: {mse}')
-    print(f'Mean Absolute Error: {mae}')
-    print(f'Mean Absolute Percentage Error: {mape}')
-    core_context.train.report_validation_metrics(
-       steps_completed=epoch,
-       metrics={'Mean Squared Error': mse,
-                'Mean Absolute Error': mae,
-                'Mean Absolute Percentage Error': mape,
-                }
-    )
-    # plt.figure(figsize=(12, 6))
-    all_actuals_list = all_actuals.reshape(1,-1).squeeze().tolist()
-    all_predictions_list = all_predictions.reshape(1,-1).squeeze().tolist()
+    
+    if core_context.distributed.rank == 0:
+      print(f'Mean Squared Error: {mse}')
+      print(f'Mean Absolute Error: {mae}')
+      print(f'Mean Absolute Percentage Error: {mape}')
+      if not is_finished:
+        core_context.train.report_validation_metrics(
+          steps_completed=epoch,
+          metrics={'Mean Squared Error': mse,
+                  'Mean Absolute Error': mae,
+                  'Mean Absolute Percentage Error': mape,
+                  }
+        )
+      else:
+        core_context.train.report_metrics(
+          group="New Time Series",
+          steps_completed=epoch,
+          metrics={'Mean Squared Error': mse,
+                  'Mean Absolute Error': mae,
+                  'Mean Absolute Percentage Error': mape,
+                  }
+        ) 
 
-    pltt.clear_figure()
-    pltt.plot(all_actuals_list, label='Actual Prices', color='blue')
-    pltt.plot(all_predictions_list, label='Predicted Prices', color='red')
-    pltt.title('Actual vs Predicted Stock Prices (training data)')
-    pltt.xlabel('Time (Days)')
-    pltt.ylabel('Stock Price')
-    # pltt.legend()
-    pltt.show()
+      all_actuals_list = all_actuals.reshape(1,-1).squeeze().tolist()
+      all_predictions_list = all_predictions.reshape(1,-1).squeeze().tolist()
+
+      pltt.clear_figure()
+      pltt.plot(all_actuals_list, label='Actual Prices', color='blue')
+      pltt.plot(all_predictions_list, label='Predicted Prices', color='red')
+      pltt.title('Actual vs Predicted Stock Prices (training data)')
+      pltt.xlabel('Time (Days)')
+      pltt.ylabel('Stock Price')
+      # pltt.legend()
+      pltt.show()
     return mse, mae, mape
 
 def set_seed(seed_value):
@@ -212,17 +223,17 @@ def set_seed(seed_value):
     torch.backends.cudnn.benchmark = False
 
 def load_state(checkpoint_directory, trial_id):
-  checkpoint_directory = pathlib.Path(checkpoint_directory)
+    checkpoint_directory = pathlib.Path(checkpoint_directory)
 
-  with checkpoint_directory.joinpath("checkpoint.pt").open("rb") as f:
-     model = torch.load(f)
-  with checkpoint_directory.joinpath("state").open("r") as f:
-     start_epoch, ckpt_trial_id = [int(field) for field in f.read().split(",")]
+    with checkpoint_directory.joinpath("checkpoint.pt").open("rb") as f:
+      model = torch.load(f)
+    with checkpoint_directory.joinpath("state").open("r") as f:
+      start_epoch, ckpt_trial_id = [int(field) for field in f.read().split(",")]
 
-  if ckpt_trial_id != trial_id:
-     start_epoch = 0
+    if ckpt_trial_id != trial_id:
+      start_epoch = 0
 
-  return model, start_epoch
+    return model, start_epoch
 
 def main(core_context): # (note: seq_length needs to be a multiple of num_heads)
     info = det.get_cluster_info()
@@ -292,30 +303,28 @@ def main(core_context): # (note: seq_length needs to be a multiple of num_heads)
     for op in core_context.searcher.operations():
     # for epoch in range(epochs):
       for epoch in range(start_epoch,op.length):
+        ################################### Training
         train(model, train_loader, optimizer, criterion, device, epoch,core_context,op)
-
         ################################### predict 
-        if core_context.distributed.rank == 0:
-          if ( (epoch + 1) % 5) == 0:
-            eval_with_dataset(model,scaler_train,X,y,core_context,epoch,device) # eval with training data
+        if ( (epoch + 1) % 5) == 0:
+          eval_with_dataset(model,scaler_train,X,y,core_context,epoch,device,False) # eval with training data
 
+          if core_context.distributed.rank == 0:
             checkpoint_metadata_dict = {"steps_completed": epoch, "description": "checkpoint of transformer model which predict 1day after"} # steps_completed is required_item
             with core_context.checkpoint.store_path(checkpoint_metadata_dict) as (path, storage_id):
-               torch.save(model.state_dict(), path / "checkpoint.pt")
-               with path.joinpath("state").open("w") as f:
+                torch.save(model.state_dict(), path / "checkpoint.pt")
+                with path.joinpath("state").open("w") as f:
                   f.write(f"{epoch+1},{info.trial.trial_id}")
 
-        if ( (epoch + 1) % 5) == 0:    
-          if core_context.preempt.should_preempt():
-            return
+        if core_context.preempt.should_preempt():
+          return
     
       ################################### predict final model with new timeline
       if core_context.distributed.rank == 0:
-        mse, mae, mape = eval_with_dataset(model,scaler_test,X_test,y_test,core_context,epoch+1,device) # eval with new data
-        op.report_completed({'mse': mse, 'mae':mae , 'mape':mape})
+        mse, mae, mape = eval_with_dataset(model,scaler_test,X_test,y_test,core_context,epoch,device,True) # eval with new data
+        op.report_completed(mape)
 
 if __name__ == '__main__':
- 
   #### DDP code snippet
   dist.init_process_group("nccl")
   distributed = det.core.DistributedContext.from_torch_distributed()

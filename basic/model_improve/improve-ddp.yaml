@@ -1,6 +1,5 @@
-name: time-series-improve-hpsearch
-debug: true
-# description: 4 gpu, 8 seq length, 128 batch, 200 epoch
+name: time-series-improve-ddp
+# description: A bare-bones experiment configuration file to run the model_def.py script on a Determined cluster.
 entrypoint:  python3 -m determined.launch.torch_distributed python3 model-improve-hpsearch.py
 max_restarts: 0
 hyperparameters:
@@ -15,13 +14,12 @@ hyperparameters:
     vals: [10,1024]
   lr: 0.0001
 searcher:
-  name: adaptive_asha #single
-  metric: "Mean Absolute Percentage Error"
-  max_length:
-    epochs: 30
-  max_trials: 6
+   name: single
+   metric: "Mean Absolute Percentage Error"
+   max_length:
+     epochs: 50
 resources:
-  slots_per_trial: 1
+  slots_per_trial: 2
 environment:
   image:
     cpu: determinedai/pytorch-ngc:0.34.0
