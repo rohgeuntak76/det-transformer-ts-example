@@ -13,9 +13,9 @@ searcher:
    name: single
    metric: val_loss # single일때는 상관 없는듯
    max_length:
-     epochs: 200
+     epochs: 50
 resources:
-  slots_per_trial: 2
+  slots_per_trial: 1
 environment:
   image:
     cpu: determinedai/pytorch-ngc:0.34.0
