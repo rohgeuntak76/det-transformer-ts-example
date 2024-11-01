@@ -1,4 +1,5 @@
 import math
+import pathlib
 import yfinance as yf
 import numpy as np
 import pandas as pd
@@ -133,11 +134,12 @@ def train(model, train_loader, optimizer, criterion, device, epoch,core_context,
         optimizer.step()
     if core_context.distributed.rank == 0:        
       if ( (epoch + 1) % 5) == 0:
-          print(f'Epoch {epoch+1}, Loss: {loss.item()}')
+          print(f'Epoch {epoch}, Loss: {loss.item()}')
           core_context.train.report_training_metrics(
-            steps_completed=(epoch+1),
+            steps_completed=(epoch),
             metrics={"train_loss": loss.item()}
           )
+
       op.report_progress(epoch)
     
 
@@ -209,10 +211,41 @@ def set_seed(seed_value):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-def main(seq_length, batch_size, input_dim, num_layers,
-         num_heads, dim_feedforward, output_dim, lr,
-         core_context): # (note: seq_length needs to be a multiple of num_heads)
+def load_state(checkpoint_directory, trial_id):
+  checkpoint_directory = pathlib.Path(checkpoint_directory)
 
+  with checkpoint_directory.joinpath("checkpoint.pt").open("rb") as f:
+     model = torch.load(f)
+  with checkpoint_directory.joinpath("state").open("r") as f:
+     start_epoch, ckpt_trial_id = [int(field) for field in f.read().split(",")]
+
+  if ckpt_trial_id != trial_id:
+     start_epoch = 0
+
+  return model, start_epoch
+
+def main(core_context): # (note: seq_length needs to be a multiple of num_heads)
+    info = det.get_cluster_info()
+    assert info is not None, "this example only runs on MLDE"
+
+    latest_checkpoint = info.latest_checkpoint
+    if latest_checkpoint == None:
+       print("No checkpoints")
+       start_epoch = 0
+    else:
+       with core_context.checkpoint.restore_path(latest_checkpoint) as path:
+          loaded_state,start_epoch = load_state(path,info.trial.trial_id)
+        
+    hparams = info.trial.hparams
+    
+    seq_length = hparams["seq_length"]  #8
+    batch_size = hparams["batch_size"] # 16 #128
+    input_dim = 1
+    num_layers = hparams["num_layers"] #2
+    num_heads = hparams["num_heads"] #2
+    dim_feedforward = hparams["dim_feedforward"] #10
+    output_dim = 1
+    lr = hparams["lr"]
     ################################# train model
     set_seed(0)
     # train data 
@@ -248,19 +281,33 @@ def main(seq_length, batch_size, input_dim, num_layers,
     model = TransformerModel(input_dim, seq_length, num_layers, num_heads, dim_feedforward, output_dim).to(device)
     model = DDP(model,device_ids=[device])
     ### DDP code snippet end
+    if start_epoch != 0:
+       print("load state_dict from MLDE checkpoint!")
+       model.load_state_dict(loaded_state)
+    ### checkpoint snippet 
 
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr) # learning rate (i.e. step size of loss function), 0.001 is a common lr
 
     for op in core_context.searcher.operations():
     # for epoch in range(epochs):
-      for epoch in range(op.length):
+      for epoch in range(start_epoch,op.length):
         train(model, train_loader, optimizer, criterion, device, epoch,core_context,op)
 
         ################################### predict 
         if core_context.distributed.rank == 0:
           if ( (epoch + 1) % 5) == 0:
             eval_with_dataset(model,scaler_train,X,y,core_context,epoch,device) # eval with training data
+
+            checkpoint_metadata_dict = {"steps_completed": epoch, "description": "checkpoint of transformer model which predict 1day after"} # steps_completed is required_item
+            with core_context.checkpoint.store_path(checkpoint_metadata_dict) as (path, storage_id):
+               torch.save(model.state_dict(), path / "checkpoint.pt")
+               with path.joinpath("state").open("w") as f:
+                  f.write(f"{epoch+1},{info.trial.trial_id}")
+
+        if ( (epoch + 1) % 5) == 0:    
+          if core_context.preempt.should_preempt():
+            return
     
       ################################### predict final model with new timeline
       if core_context.distributed.rank == 0:
@@ -268,34 +315,12 @@ def main(seq_length, batch_size, input_dim, num_layers,
         op.report_completed({'mse': mse, 'mae':mae , 'mape':mape})
 
 if __name__ == '__main__':
-  # HP
-  info = det.get_cluster_info()
-
-  assert info is not None, "this example only runs on MLDE"
-  hparams = info.trial.hparams
-  
-  seq_length = hparams["seq_length"]  #8
-  batch_size = hparams["batch_size"] # 16 #128
-  input_dim = 1
-  num_layers = hparams["num_layers"] #2
-  num_heads = hparams["num_heads"] #2
-  dim_feedforward = hparams["dim_feedforward"] #10
-  output_dim = 1
-  lr = hparams["lr"] #0.0001
-  # epochs = 50
-  
-  print(hparams)
-  print(f"seq_length: {seq_length} , num_layers: {num_layers} , num_heads: {num_heads} , dim_feedforward: {dim_feedforward}, lr: {lr}")
-
-  # device = torch.device("cuda")
-  # with det.core.init() as core_context:
-  # main(seq_length,batch_size, input_dim, num_layers,num_heads,dim_feedforward,output_dim,lr,epochs,device,core_context)
-
+ 
   #### DDP code snippet
   dist.init_process_group("nccl")
   distributed = det.core.DistributedContext.from_torch_distributed()
   with det.core.init(distributed=distributed) as core_context:
-    main(seq_length,batch_size, input_dim, num_layers,num_heads,dim_feedforward,output_dim,lr,core_context)
+    main(core_context)
 
   # def main(seq_length=4, batch_size=16, input_dim = 1, num_layers=2,
   #        num_heads = 2, dim_feedforward=10, output_dim = 1, lr=0.001,
