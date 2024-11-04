@@ -1,4 +1,3 @@
-import time
 import math
 import pathlib
 import yfinance as yf
@@ -19,7 +18,6 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 
 def create_sequences_offline(symbol,start,end, seq_length, is_offline,is_train):
-  # data = yf.download(symbol, start=start, end=end)
   if is_offline:
     if is_train:
       file_name = f'input/train_{symbol}_{start}_{end}.csv'
@@ -30,22 +28,6 @@ def create_sequences_offline(symbol,start,end, seq_length, is_offline,is_train):
   else:
     data = yf.download(symbol, start=start, end=end)
 
-
-  prices = data['Close'].values.reshape(-1, 1)
-  scaler = MinMaxScaler(feature_range=(-1, 1)) # diff
-  prices_normalized = scaler.fit_transform(prices)
-  prices_tensor = torch.FloatTensor(prices_normalized)
-  
-  xs,ys = [],[]
-  for i in range(len(prices_tensor)-seq_length-1):
-    x = prices_tensor[i:(i+seq_length)] # use prices_tensor[0:5] to predict data[5], use data[1:6] to predict data[6]
-    y=prices_tensor[i+seq_length]
-    xs.append(x)
-    ys.append(y)
-  return torch.stack(xs), torch.stack(ys), scaler
-
-def create_sequences(symbol,start,end, seq_length):
-  data = yf.download(symbol, start=start, end=end)
   prices = data['Close'].values.reshape(-1, 1)
   scaler = MinMaxScaler(feature_range=(-1, 1)) # diff
   prices_normalized = scaler.fit_transform(prices)
@@ -159,23 +141,15 @@ def eval_with_dataset(model, scaler,X,y,core_context,epoch,device,is_finished):
         print(f'Mean Squared Error: {mse}')
         print(f'Mean Absolute Error: {mae}')
         print(f'Mean Absolute Percentage Error: {mape}')
-        # time.sleep(60)
+        val_metrics = {'Mean Squared Error': mse, 'Mean Absolute Error': mae,'Mean Absolute Percentage Error': mape,}
         if not is_finished:
           core_context.train.report_validation_metrics(
-            steps_completed=epoch,
-            metrics={'Mean Squared Error': mse,
-                    'Mean Absolute Error': mae,
-                    'Mean Absolute Percentage Error': mape,
-                    }
+            steps_completed=epoch, metrics=val_metrics
           )
         else:                                            # last evaluation with new data reported as seperate metrics
           core_context.train.report_metrics(        
             group="New Time Series",
-            steps_completed=epoch,
-            metrics={'Mean Squared Error': mse,
-                    'Mean Absolute Error': mae,
-                    'Mean Absolute Percentage Error': mape,
-                    }
+            steps_completed=epoch,metrics=val_metrics
           ) 
 
         all_actuals_list = all_actuals.reshape(1,-1).squeeze().tolist()
@@ -225,28 +199,25 @@ def main(core_context): # (note: seq_length needs to be a multiple of num_heads)
         
     hparams = info.trial.hparams
     
-    seq_length = hparams["seq_length"]  #8
-    batch_size = hparams["batch_size"] # 16 #128
+    seq_length = hparams["seq_length"] #8
+    batch_size = hparams["batch_size"] #16 #128
     input_dim = 1
     num_layers = hparams["num_layers"] #2
-    num_heads = hparams["num_heads"] #2
+    num_heads = hparams["num_heads"]   #2
     dim_feedforward = hparams["dim_feedforward"] #10
     output_dim = 1
     lr = hparams["lr"]
     ################################# train model
     set_seed(0)
     # train data 
-    symbol = 'AAPL'
-    # symbol = '^GSPC'
+    symbol = 'AAPL' #'^GSPC'
     start_train = '2010-01-01'
     end_train = '2023-12-31'
-    # X, y, scaler_train = create_sequences(symbol,start_train,end_train, seq_length)
     X, y, scaler_train = create_sequences_offline(symbol,start_train,end_train, seq_length,is_offline=True,is_train=True)
     
     # test data
     start_test = '2024-01-01'
     end_test = '2024-06-30'
-    # X_test, y_test, scaler_test = create_sequences(symbol,start_test,end_test, seq_length)
     X_test, y_test, scaler_test = create_sequences_offline(symbol,start_test,end_test, seq_length,is_offline=True,is_train=False)
   
     train_data = TensorDataset(X,y)
@@ -278,7 +249,7 @@ def main(core_context): # (note: seq_length needs to be a multiple of num_heads)
         train(model, train_loader, optimizer, criterion, device, epoch,core_context,op)
         ################################### evaluation 
         if ( (epoch + 1) % 5) == 0:
-          eval_with_dataset(model,scaler_train,X,y,core_context,epoch,device,False) # eval with training data
+          eval_with_dataset(model,scaler_train,X,y,core_context,epoch,device,False) # eval with training data every 5 epochs
 
           if core_context.distributed.rank == 0:
             checkpoint_metadata_dict = {"steps_completed": epoch, "description": "checkpoint of transformer model which predict 1day after"} # steps_completed is required_item
