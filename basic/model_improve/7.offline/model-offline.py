@@ -186,6 +186,9 @@ def load_state(checkpoint_directory, trial_id):
     return model, start_epoch
 
 def main(core_context): # (note: seq_length needs to be a multiple of num_heads)
+    torch.cuda.set_device(core_context.distributed.local_rank)
+    dist.init_process_group("nccl")
+
     info = det.get_cluster_info()
     assert info is not None, "this example only runs on MLDE"
 
@@ -268,7 +271,7 @@ def main(core_context): # (note: seq_length needs to be a multiple of num_heads)
 
 if __name__ == '__main__':
   #### DDP code snippet
-  dist.init_process_group("nccl")
+  # dist.init_process_group("nccl")
   distributed = det.core.DistributedContext.from_torch_distributed()
   with det.core.init(distributed=distributed) as core_context:
     main(core_context)
