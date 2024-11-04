@@ -1,6 +1,8 @@
+import time
 import math
 import pathlib
 import yfinance as yf
+import pandas as pd
 import numpy as np
 import random
 from sklearn.preprocessing import MinMaxScaler
@@ -15,6 +17,32 @@ import determined as det
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
+
+def create_sequences_offline(symbol,start,end, seq_length, is_offline,is_train):
+  # data = yf.download(symbol, start=start, end=end)
+  if is_offline:
+    if is_train:
+      file_name = f'input/train_{symbol}_{start}_{end}.csv'
+    else:
+      file_name = f'input/test_{symbol}_{start}_{end}.csv'
+    print(f"Read input data from {file_name} file!")
+    data = pd.read_csv(file_name,header=[0,1],index_col=0)
+  else:
+    data = yf.download(symbol, start=start, end=end)
+
+
+  prices = data['Close'].values.reshape(-1, 1)
+  scaler = MinMaxScaler(feature_range=(-1, 1)) # diff
+  prices_normalized = scaler.fit_transform(prices)
+  prices_tensor = torch.FloatTensor(prices_normalized)
+  
+  xs,ys = [],[]
+  for i in range(len(prices_tensor)-seq_length-1):
+    x = prices_tensor[i:(i+seq_length)] # use prices_tensor[0:5] to predict data[5], use data[1:6] to predict data[6]
+    y=prices_tensor[i+seq_length]
+    xs.append(x)
+    ys.append(y)
+  return torch.stack(xs), torch.stack(ys), scaler
 
 def create_sequences(symbol,start,end, seq_length):
   data = yf.download(symbol, start=start, end=end)
@@ -131,6 +159,7 @@ def eval_with_dataset(model, scaler,X,y,core_context,epoch,device,is_finished):
         print(f'Mean Squared Error: {mse}')
         print(f'Mean Absolute Error: {mae}')
         print(f'Mean Absolute Percentage Error: {mape}')
+        # time.sleep(60)
         if not is_finished:
           core_context.train.report_validation_metrics(
             steps_completed=epoch,
@@ -207,17 +236,19 @@ def main(core_context): # (note: seq_length needs to be a multiple of num_heads)
     ################################# train model
     set_seed(0)
     # train data 
-    # symbol = 'AAPL'
-    symbol = '^GSPC'
+    symbol = 'AAPL'
+    # symbol = '^GSPC'
     start_train = '2010-01-01'
     end_train = '2023-12-31'
-    X, y, scaler_train = create_sequences(symbol,start_train,end_train, seq_length)
+    # X, y, scaler_train = create_sequences(symbol,start_train,end_train, seq_length)
+    X, y, scaler_train = create_sequences_offline(symbol,start_train,end_train, seq_length,is_offline=True,is_train=True)
     
     # test data
     start_test = '2024-01-01'
     end_test = '2024-06-30'
-    X_test, y_test, scaler_test = create_sequences(symbol,start_test,end_test, seq_length)
-    
+    # X_test, y_test, scaler_test = create_sequences(symbol,start_test,end_test, seq_length)
+    X_test, y_test, scaler_test = create_sequences_offline(symbol,start_test,end_test, seq_length,is_offline=True,is_train=False)
+  
     train_data = TensorDataset(X,y)
     ### DDP code snippet start
     device = torch.device(core_context.distributed.local_rank)
@@ -228,7 +259,8 @@ def main(core_context): # (note: seq_length needs to be a multiple of num_heads)
         rank=core_context.distributed.rank
     )
     train_loader = DataLoader(train_data,sampler=train_sampler,batch_size=batch_size, shuffle=False)
-
+    
+# rank0 only test
     model = TransformerModel(input_dim, seq_length, num_layers, num_heads, dim_feedforward, output_dim).to(device)
     model = DDP(model,device_ids=[device])
     ### DDP code snippet end

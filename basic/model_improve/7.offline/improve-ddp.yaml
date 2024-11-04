@@ -1,6 +1,6 @@
-name: time-series-improve-ddp
+name: time-series-improve-offline-2gpu
 # description: A bare-bones experiment configuration file to run the model_def.py script on a Determined cluster.
-entrypoint:  python3 -m determined.launch.torch_distributed python3 model.py
+entrypoint:  python3 -m determined.launch.torch_distributed python3 model-offline.py
 max_restarts: 0
 hyperparameters:
   seq_length: 8
