@@ -1,10 +1,10 @@
 name: time-series-offline-multi-gpu
-# description: 2 gpus, 8 seq, 32 batch_size, 50 epochs
+description: 4 gpus, 8 seq, 64 batch_size, 200 epochs
 entrypoint:  python3 -m determined.launch.torch_distributed python3 model-offline.py
 max_restarts: 0
 hyperparameters:
   seq_length: 8
-  batch_size: 32
+  batch_size: 64
   num_layers: 2
   num_heads: 2
   dim_feedforward: 10
@@ -13,6 +13,6 @@ searcher:
    name: single
    metric: "Mean Absolute Percentage Error"
    max_length:
-     epochs: 50
+     epochs: 200
 resources:
-  slots_per_trial: 2
+  slots_per_trial: 4
