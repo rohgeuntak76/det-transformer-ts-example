@@ -1,5 +1,5 @@
-name: time-series-improve-offline-2gpu
-# description: A bare-bones experiment configuration file to run the model_def.py script on a Determined cluster.
+name: time-series-offline-multi-gpu
+# description: 2 gpus, 8 seq, 32 batch_size, 50 epochs
 entrypoint:  python3 -m determined.launch.torch_distributed python3 model-offline.py
 max_restarts: 0
 hyperparameters:
@@ -16,6 +16,3 @@ searcher:
      epochs: 50
 resources:
   slots_per_trial: 2
-environment:
-  image:
-    cpu: determinedai/pytorch-ngc:0.34.0
